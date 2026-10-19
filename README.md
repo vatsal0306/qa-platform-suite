@@ -19,7 +19,7 @@ has real defects to find, log in JIRA, and retest after a fix.
 | REST API testing, Postman | [`tests/postman`](tests/postman): 70 requests, 99 assertions; positive, negative, boundary, security probes; run with Newman |
 | JUnit, TDD | [`tests/api-junit`](tests/api-junit): REST Assured + JUnit 5 (36 test executions); `StatsApiTest` is the TDD example ([`docs/tdd-log.md`](docs/tdd-log.md)) |
 | Cypress, TypeScript, regression | [`tests/e2e-cypress`](tests/e2e-cypress): page objects, API shortcuts, tagged specs (24 executions per browser) |
-| Cross-browser / compatibility | Cypress on Chrome, Firefox and Edge in CI; 5 viewport sizes; Playwright WebKit |
+| Cross-browser / compatibility | Cypress on Chrome (Firefox/Edge specs run locally, not in CI); 5 viewport sizes; Playwright WebKit |
 | iOS / Android | [`tests/mobile`](tests/mobile): Playwright device emulation (iPhone 13, iPad Mini, Pixel 7, Galaxy S9+); real-device plan in [`docs/test-plan.md`](docs/test-plan.md) section 7 |
 | WCAG accessibility | cypress-axe + Playwright axe (A/AA tags), [manual checklist](docs/wcag-checklist.md) |
 | PL/SQL database validation | [`tests/db-plsql`](tests/db-plsql): `qa_validation` package on Oracle XE, loaded from an API export |
