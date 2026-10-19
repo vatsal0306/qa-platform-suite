@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+**/reports
+**/target
+**/__pycache__
+.DS_Store
+
+test-results
+playwright-report
+*.log
+**/cypress/screenshots
+*~
+**/cypress/downloads

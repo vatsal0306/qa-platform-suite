@@ -1,0 +1,54 @@
+name: Test deployed AWS environment
+
+# Runs the API + UI suites against an environment that is ALREADY deployed (see infra/aws).
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: "Frontend URL, e.g. http://<ec2-ip>:5173"
+        required: true
+      api_url:
+        description: "API base URL, e.g. http://<ec2-ip>:8000"
+        required: true
+      expect:
+        description: "pass = fixed build deployed, fail = seeded build deployed"
+        type: choice
+        options: [pass, fail]
+        default: pass
+
+jobs:
+  remote-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: |
+          (cd tests/postman && npm ci)
+          (cd tests/e2e-cypress && npm ci)
+      - name: Smoke - API and web reachable
+        run: |
+          curl -sf "${{ inputs.api_url }}/api/health"
+          curl -sf -o /dev/null "${{ inputs.web_url }}"
+      - name: Postman / Newman
+        working-directory: tests/postman
+        run: ../../tools/expect.sh "${{ inputs.expect }}" npx newman run qa-orders.postman_collection.json --env-var baseUrl=${{ inputs.api_url }} --reporters cli,junit --reporter-junit-export reports/postman.xml
+      - name: Cypress - Chrome
+        if: ${{ !cancelled() }}
+        working-directory: tests/e2e-cypress
+        env:
+          CYPRESS_BASE_URL: ${{ inputs.web_url }}
+          CYPRESS_API_URL: ${{ inputs.api_url }}/api
+        run: ../../tools/expect.sh "${{ inputs.expect }}" npx cypress run --browser chrome
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: aws-reports
+          if-no-files-found: ignore
+          path: |
+            tests/postman/reports
+            tests/e2e-cypress/reports
+            tests/e2e-cypress/cypress/screenshots

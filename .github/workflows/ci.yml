@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Build and static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build React app
+        working-directory: app/frontend-react
+        run: npm ci && npm run build
+      - name: Type-check Cypress and Playwright suites
+        run: |
+          (cd tests/e2e-cypress && CYPRESS_INSTALL_BINARY=0 npm ci && npm run typecheck)
+          (cd tests/mobile && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci && npm run typecheck)
+      - name: Postman suite vs reference API (fixed passes, seeded fails)
+        run: |
+          (cd tests/postman && npm ci)
+          tools/verify-postman.sh
+
+  suites:
+    name: Suites - ${{ matrix.build }} build
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: fixed       # every suite must pass
+            seeded: "false"
+            expect: pass
+          - build: seeded      # every suite must FAIL (detect the bugs)
+            seeded: "true"
+            expect: fail
+    env:
+      SEEDED_BUGS: ${{ matrix.seeded }}
+      EXPECT: ${{ matrix.expect }}
+      API_BASE_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+          cache-dependency-path: tests/api-junit/pom.xml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start app (MySQL + Laravel API + React) and Oracle XE
+        run: |
+          docker compose up -d --build mysql api web
+          docker compose --profile db up -d oracle
+          for i in $(seq 1 60); do curl -sf localhost:8000/api/health >/dev/null && break; sleep 3; done
+          for i in $(seq 1 40); do curl -sf localhost:5173 >/dev/null && break; sleep 3; done
+          curl -sf localhost:8000/api/health && curl -sf -o /dev/null localhost:5173
+
+      - name: Install test dependencies
+        run: |
+          (cd tests/postman && npm ci)
+          (cd tests/e2e-cypress && npm ci)
+          (cd tests/mobile && npm ci && npx playwright install --with-deps chromium webkit)
+
+      - name: Postman / Newman
+        if: ${{ !cancelled() }}
+        working-directory: tests/postman
+        run: ../../tools/expect.sh "$EXPECT" npx newman run qa-orders.postman_collection.json -e local.postman_environment.json --reporters cli,junit --reporter-junit-export reports/postman.xml
+
+      - name: REST Assured / JUnit
+        if: ${{ !cancelled() }}
+        working-directory: tests/api-junit
+        run: ../../tools/expect.sh "$EXPECT" mvn -B test -Dapi.base=http://localhost:8000
+
+      - name: Cypress - Chrome
+        if: ${{ !cancelled() }}
+        working-directory: tests/e2e-cypress
+        env:
+          CYPRESS_BASE_URL: http://localhost:5173
+          CYPRESS_API_URL: http://localhost:8000/api
+        run: ../../tools/expect.sh "$EXPECT" npx cypress run --browser chrome
+
+      - name: Cypress - Firefox
+        if: ${{ !cancelled() }}
+        working-directory: tests/e2e-cypress
+        env:
+          CYPRESS_BASE_URL: http://localhost:5173
+          CYPRESS_API_URL: http://localhost:8000/api
+        run: ../../tools/expect.sh "$EXPECT" npx cypress run --browser firefox
+
+      - name: Cypress - Edge
+        if: ${{ !cancelled() }}
+        working-directory: tests/e2e-cypress
+        env:
+          CYPRESS_BASE_URL: http://localhost:5173
+          CYPRESS_API_URL: http://localhost:8000/api
+        run: ../../tools/expect.sh "$EXPECT" npx cypress run --browser edge
+
+      - name: Playwright - mobile devices (iOS Safari / Android Chrome engines)
+        if: ${{ !cancelled() }}
+        working-directory: tests/mobile
+        env:
+          BASE_URL: http://localhost:5173
+          API_URL: http://localhost:8000/api
+        run: ../../tools/expect.sh "$EXPECT" npx playwright test
+
+      - name: PL/SQL data validation (Oracle XE)
+        if: ${{ !cancelled() }}
+        working-directory: tests/db-plsql
+        env:
+          ORACLE_DSN: localhost:1521/XEPDB1
+          QA_EXPORT_KEY: qa-export-key
+        run: |
+          pip install -q -r requirements.txt
+          for i in $(seq 1 60); do docker compose exec -T oracle healthcheck.sh >/dev/null 2>&1 && break; sleep 5; done
+          python setup_db.py
+          if [ "$EXPECT" = "pass" ]; then
+            python run_validation.py --expect-clean
+          else
+            python run_validation.py --expect-detect BUG-002,BUG-004,BUG-005,BUG-007,BUG-010
+          fi
+
+      - name: Upload reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.build }}
+          if-no-files-found: ignore
+          path: |
+            tests/postman/reports
+            tests/api-junit/target/surefire-reports
+            tests/e2e-cypress/reports
+            tests/e2e-cypress/cypress/screenshots
+            tests/mobile/playwright-report
+            tests/mobile/reports
+            tests/db-plsql/reports
+
+      - name: Tear down
+        if: ${{ always() }}
+        run: docker compose --profile db down -v

@@ -1,0 +1,136 @@
+# App + database + test runners.
+#   docker compose up -d --build                     -> mysql, api (:8000), web (:5173)
+#   docker compose --profile db up -d oracle         -> Oracle XE for the PL/SQL validation
+#   docker compose --profile tests run --rm newman   -> one test runner (newman | junit | cypress | playwright)
+#   docker compose --profile db run --rm dbcheck     -> PL/SQL validation
+name: qa-platform-suite
+
+x-seed: &seed
+  SEEDED_BUGS: ${SEEDED_BUGS:-true}
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: qa_app
+      MYSQL_USER: qa
+      MYSQL_PASSWORD: qa_password
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot_password --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: ./app/backend-laravel
+    environment:
+      <<: *seed
+      FIXED_BUGS: ${FIXED_BUGS:-}
+      QA_EXPORT_KEY: ${QA_EXPORT_KEY:-qa-export-key}
+      APP_ENV: local
+      APP_DEBUG: "false"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: qa_app
+      DB_USERNAME: qa
+      DB_PASSWORD: qa_password
+      SESSION_DRIVER: array
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+    ports: ["8000:8000"]
+    depends_on:
+      mysql: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://localhost:8000/api/health') ? 0 : 1);"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  web:
+    build:
+      context: ./app/frontend-react
+      args:
+        VITE_SEEDED_BUGS: ${SEEDED_BUGS:-true}
+    environment:
+      API_URL: http://api:8000
+    ports: ["5173:5173"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # ---------------- PL/SQL validation (profile: db) ----------------
+  oracle:
+    profiles: [db]
+    image: gvenzl/oracle-xe:21-slim-faststart
+    environment:
+      ORACLE_PASSWORD: oracle_admin_password
+      APP_USER: qa
+      APP_USER_PASSWORD: qa_password
+    ports: ["1521:1521"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  dbcheck:
+    profiles: [db]
+    image: python:3.12-slim
+    working_dir: /db
+    volumes: ["./tests/db-plsql:/db"]
+    environment:
+      ORACLE_DSN: oracle:1521/XEPDB1
+      API_BASE_URL: http://api:8000
+      QA_EXPORT_KEY: ${QA_EXPORT_KEY:-qa-export-key}
+    command: sh -c "pip install -q -r requirements.txt && python setup_db.py && python run_validation.py ${DBCHECK_ARGS:-}"
+    depends_on:
+      oracle: { condition: service_healthy }
+      api: { condition: service_healthy }
+
+  # ---------------- test runners (profile: tests) ----------------
+  newman:
+    profiles: [tests]
+    image: postman/newman:6-alpine
+    volumes: ["./tests/postman:/etc/newman"]
+    command: run qa-orders.postman_collection.json --env-var baseUrl=http://api:8000
+    depends_on:
+      api: { condition: service_healthy }
+
+  junit:
+    profiles: [tests]
+    image: maven:3.9-eclipse-temurin-17
+    working_dir: /work
+    volumes: ["./tests/api-junit:/work", "maven-cache:/root/.m2"]
+    command: mvn -B test -Dapi.base=http://api:8000
+    depends_on:
+      api: { condition: service_healthy }
+
+  cypress:
+    profiles: [tests]
+    image: cypress/included:13.13.0
+    working_dir: /e2e
+    volumes: ["./tests/e2e-cypress:/e2e"]
+    environment:
+      CYPRESS_BASE_URL: http://web:5173
+      CYPRESS_API_URL: http://api:8000/api
+    entrypoint: ["sh", "-c", "npm install --no-audit --no-fund && cypress run --browser ${CYPRESS_BROWSER:-electron}"]
+    depends_on:
+      web: { condition: service_started }
+
+  playwright:
+    profiles: [tests]
+    image: mcr.microsoft.com/playwright:v1.46.0-jammy
+    working_dir: /mobile
+    volumes: ["./tests/mobile:/mobile"]
+    environment:
+      BASE_URL: http://web:5173
+      API_URL: http://api:8000/api
+    command: sh -c "npm install --no-audit --no-fund && npx playwright test"
+    depends_on:
+      web: { condition: service_started }
+
+volumes:
+  mysql-data:
+  maven-cache:

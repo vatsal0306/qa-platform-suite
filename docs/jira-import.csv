@@ -1,0 +1,289 @@
+Summary,Issue Type,Priority,Component/s,Labels,Labels,Description
+[BUG-001] Registration accepts malformed e-mail addresses,Bug,High,Auth,seeded-bug,api,"*Steps to reproduce*
+# POST /api/register with email 'not-an-email' and a valid name/password
+
+*Expected*
+422 with an error on 'email'
+
+*Actual*
+201 Created, account and token issued
+
+*Code location*
+AuthController::register - 'email' rule has no 'email' validator
+
+*Detected by*
+* Postman: Register invalid email format
+* JUnit: AuthApiTest.registerRejectsInvalidEmail (5 cases)
+* Cypress: auth.cy.ts invalid e-mail
+
+*Suggested fix*
+Add the 'email' rule to the validator."
+"[BUG-002] Order quantity not range-checked (0, negative and >1000 accepted)",Bug,High,Orders,seeded-bug,api-db,"*Steps to reproduce*
+# POST /api/orders with items[0].quantity = 0, -5 or 1001
+
+*Expected*
+422 (allowed range 1..1000)
+
+*Actual*
+201 Created; zero/negative quantities and totals are stored
+
+*Code location*
+OrderController::store - quantity rule is 'required|integer' (min/max removed)
+
+*Detected by*
+* Postman: Quantity 0 / -5 / 1001
+* JUnit: OrderApiTest.invalidQuantity
+* Cypress: orders.cy.ts quantity 0
+* PL/SQL: QTY_POSITIVE
+
+*Suggested fix*
+Restore 'required|integer|min:1|max:1000'. Add a DB CHECK constraint as defence in depth."
+[BUG-003] Broken object-level authorization: any user can access any order (IDOR),Bug,Highest,Orders,seeded-bug,api,"*Steps to reproduce*
+# Register users A and B
+# A creates an order (id N)
+# As B call GET/PUT/DELETE /api/orders/N and POST /api/orders/N/pay
+
+*Expected*
+403 Forbidden
+
+*Actual*
+200 - B can read, edit, pay, ship, cancel and delete A's order
+
+*Code location*
+OrderController::load - ownership check skipped
+
+*Detected by*
+* Postman: User B cannot read/update/pay user A order
+* JUnit: OrderApiTest.isolationBetweenUsers
+
+*Suggested fix*
+Compare order.user_id with the authenticated user (or scope the query / use a policy)."
+[BUG-004] Order can be paid more than once (double charge),Bug,Highest,Order workflow,seeded-bug,api-db,"*Steps to reproduce*
+# Create an order
+# POST /pay twice
+
+*Expected*
+Second call: 409 Conflict, payment_attempts stays 1
+
+*Actual*
+Second call 200, payment_attempts = 2
+
+*Code location*
+OrderController::pay - status guard allows 'paid'
+
+*Detected by*
+* Postman: Pay again
+* JUnit: WorkflowApiTest.cannotPayTwice
+* PL/SQL: SINGLE_PAYMENT
+
+*Suggested fix*
+Allow payment only from status 'created'; make the transition idempotent / use a DB lock."
+[BUG-005] Unpaid order can be shipped,Bug,Highest,Order workflow,seeded-bug,api-db,"*Steps to reproduce*
+# Create an order
+# POST /ship without paying
+
+*Expected*
+409 Conflict
+
+*Actual*
+200, status shipped, paid_at is null
+
+*Code location*
+OrderController::ship - 'created' accepted as a source status
+
+*Detected by*
+* Postman: Ship before pay
+* JUnit: WorkflowApiTest.cannotShipUnpaid
+* PL/SQL: SHIPPED_WAS_PAID
+
+*Suggested fix*
+Ship only from status 'paid'."
+[BUG-006] Pagination repeats the last row of the previous page,Bug,Medium,Orders list,seeded-bug,api-ui,"*Steps to reproduce*
+# Create 5 orders
+# GET /api/orders?per_page=2&page=1 then page=2
+
+*Expected*
+Pages contain disjoint ids
+
+*Actual*
+First row of page 2 equals last row of page 1; the last order is never reachable
+
+*Code location*
+OrderController::index - offset reduced by 1 for page > 1
+
+*Detected by*
+* Postman: Pagination page 2 overlap
+* JUnit: OrderApiTest.paginationHasNoOverlap
+* Cypress: orders.cy.ts pagination
+
+*Suggested fix*
+offset = (page - 1) * per_page."
+[BUG-007] Silent 10% discount on lines with quantity >= 10,Bug,High,Orders,seeded-bug,api-db,"*Steps to reproduce*
+# POST /api/orders with quantity 10, unit_price 100
+
+*Expected*
+total = 1000.00
+
+*Actual*
+total = 900.00
+
+*Code location*
+OrderController::store - total multiplied by 0.9 for qty >= 10
+
+*Detected by*
+* Postman: Bulk order no hidden discount
+* JUnit: OrderApiTest.noHiddenDiscount
+* Cypress: bulk total
+* PL/SQL: TOTAL_MATCHES_ITEMS
+
+*Suggested fix*
+Remove the undocumented discount (or specify it in the requirements first)."
+[BUG-008] Login reveals whether an e-mail is registered (user enumeration),Bug,Medium,Auth,seeded-bug,api,"*Steps to reproduce*
+# POST /api/login with an unregistered e-mail
+
+*Expected*
+401 'Invalid credentials' (identical to a wrong password)
+
+*Actual*
+404 'No account found for this email'
+
+*Code location*
+AuthController::login - separate 404 branch for unknown e-mail
+
+*Detected by*
+* Postman: Login unknown email
+* JUnit: AuthApiTest.loginDoesNotEnumerateUsers
+* Cypress: auth.cy.ts same message
+
+*Suggested fix*
+Return the same status and message for both cases (and add rate limiting)."
+[BUG-009] customer_name longer than 100 chars causes HTTP 500,Bug,Medium,Orders,seeded-bug,api,"*Steps to reproduce*
+# POST /api/orders with a 101-character customer_name
+
+*Expected*
+422 validation error
+
+*Actual*
+500 Server Error (DB truncation)
+
+*Code location*
+OrderController::store - max length rule removed; DB column is VARCHAR(100)
+
+*Detected by*
+* Postman: customer_name 101 chars
+* JUnit: OrderApiTest.customerNameLength
+* Cypress: 101-char name
+
+*Suggested fix*
+Validate 'max:100'; never let user input reach the DB unvalidated."
+[BUG-010] Shipped orders can be cancelled,Bug,High,Order workflow,seeded-bug,api-db,"*Steps to reproduce*
+# Create, pay and ship an order
+# POST /cancel
+
+*Expected*
+409 Conflict
+
+*Actual*
+200, status cancelled while shipped_at is still set
+
+*Code location*
+OrderController::cancel - 'shipped' accepted as a source status
+
+*Detected by*
+* Postman: Cancel shipped order
+* JUnit: WorkflowApiTest.cannotCancelShipped
+* PL/SQL: CANCELLED_NOT_SHIPPED
+
+*Suggested fix*
+Cancel only from 'created' or 'paid'."
+[BUG-011] Login / register inputs have no accessible labels,Bug,Medium,Auth form,seeded-bug,ui,"*Steps to reproduce*
+# Open the login page
+# Run axe-core or inspect with a screen reader
+
+*Expected*
+Each field has a programmatically associated label
+
+*Actual*
+axe rule 'label' fails; placeholders vanish on input
+
+*Code location*
+Login.tsx - placeholder used instead of <label>
+
+*Detected by*
+* Cypress: accessibility.cy.ts login page
+
+*Suggested fix*
+Add <label htmlFor> elements (and autocomplete attributes)."
+[BUG-012] Status badge text fails colour-contrast requirement,Bug,Low,Orders list,seeded-bug,ui,"*Steps to reproduce*
+# Open the orders list
+# Measure badge colours or run axe
+
+*Expected*
+Contrast ratio >= 4.5:1
+
+*Actual*
+Contrast ratio about 2.4:1
+
+*Code location*
+styles.css - .badge-lowcontrast (#9aa0a6 on #f5f7fa, about 2.4:1)
+
+*Detected by*
+* Cypress: accessibility.cy.ts orders list
+* Playwright: axe scan on mobile
+
+*Suggested fix*
+Use a darker text colour (e.g. #1f2933)."
+[BUG-013] Orders table forces horizontal scrolling on small screens,Bug,Medium,Orders list,seeded-bug,ui,"*Steps to reproduce*
+# Open the orders list at 375px width
+
+*Expected*
+No horizontal page scroll (content reflows or the table scrolls inside its own container)
+
+*Actual*
+The whole page scrolls sideways
+
+*Code location*
+OrderList.tsx + styles.css - table min-width 720px without a scroll container
+
+*Detected by*
+* Cypress: responsive.cy.ts (4 small viewports)
+* Playwright: iPhone / Pixel overflow test
+
+*Suggested fix*
+Wrap the table in an overflow-x container and drop the fixed min-width on the page."
+"[BUG-014] 'Pay' action is a clickable <div>, not a button",Bug,High,Order detail,seeded-bug,ui,"*Steps to reproduce*
+# Open a created order
+# Try to reach Pay with the Tab key
+
+*Expected*
+Pay is focusable and activates with Enter/Space
+
+*Actual*
+Pay cannot be focused; keyboard and screen-reader users cannot pay
+
+*Code location*
+OrderDetail.tsx - div with onClick
+
+*Detected by*
+* Cypress: workflow.cy.ts Pay is a button
+
+*Suggested fix*
+Use a <button>."
+[BUG-015] Failed login shows no feedback,Bug,Medium,Auth form,seeded-bug,ui,"*Steps to reproduce*
+# Submit the login form with wrong credentials
+
+*Expected*
+Visible error message announced via role=alert
+
+*Actual*
+Nothing happens
+
+*Code location*
+Login.tsx - error swallowed in the catch block
+
+*Detected by*
+* Cypress: auth.cy.ts wrong credentials
+* Playwright: login error on mobile
+
+*Suggested fix*
+Render err.message in a role=alert element."

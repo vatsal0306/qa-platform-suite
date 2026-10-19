@@ -1,0 +1,9 @@
+{
+  "name": "qa-postman",
+  "private": true,
+  "scripts": {
+    "generate": "node generate-collection.js",
+    "test": "newman run qa-orders.postman_collection.json -e local.postman_environment.json --reporters cli,htmlextra,junit --reporter-htmlextra-export reports/postman.html --reporter-junit-export reports/postman.xml"
+  },
+  "devDependencies": { "newman": "^6.2.1", "newman-reporter-htmlextra": "^1.23.1" }
+}

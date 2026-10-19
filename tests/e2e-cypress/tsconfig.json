@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "target": "ES2020", "module": "commonjs", "moduleResolution": "node", "lib": ["ES2020", "DOM"], "types": ["cypress", "cypress-axe", "node"],
+    "strict": true, "skipLibCheck": true, "noEmit": true
+  },
+  "include": ["cypress/**/*.ts", "cypress.config.ts"]
+}
